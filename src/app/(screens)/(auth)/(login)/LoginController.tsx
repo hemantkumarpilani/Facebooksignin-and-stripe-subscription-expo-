@@ -12,6 +12,7 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import * as WebBrowser from "expo-web-browser";
@@ -19,6 +20,21 @@ import { useAuth, useOAuth } from "@clerk/clerk-expo";
 import { useRouter } from "expo-router";
 import googlelogo from "@assets/googlelogo.png";
 import facebooklogo from "@assets/facebooklogo.png";
+import { requestTrackingPermissionsAsync } from "expo-tracking-transparency";
+import {
+  LoginManager,
+  AccessToken,
+  LoginButton,
+  Settings,
+  Profile,
+} from "react-native-fbsdk-next";
+import {
+  signInWithCredential,
+  FacebookAuthProvider,
+  onAuthStateChanged,
+  User,
+} from "firebase/auth";
+import { auth } from "../../../../config/firebase";
 
 const { width, height } = Dimensions.get("window");
 
@@ -33,12 +49,24 @@ const LoginController = () => {
   const router = useRouter();
   const { isLoaded, isSignedIn } = useAuth();
 
+  // Check Firebase authentication state on component mount
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        console.log("Firebase user already signed in, redirecting to home");
+        router.replace("/(tabs)/profile");
+      }
+    });
+
+    return () => unsubscribe();
+  }, [router]);
+
   // If we already have a signed-in user (e.g. returning from OAuth), skip showing this screen.
   useEffect(() => {
     if (!isLoaded) return;
     if (isSignedIn) {
       console.log("isSignedIn", isSignedIn);
-      router.replace("/tabs/profile");
+      router.replace("/(tabs)/profile");
     }
   }, [isLoaded, isSignedIn, router]);
 
@@ -53,6 +81,20 @@ const LoginController = () => {
   const { startOAuthFlow: startFacebookOAuth } = useOAuth({
     strategy: "oauth_facebook",
   });
+
+  useEffect(() => {
+    const requestTracking = async () => {
+      const { status } = await requestTrackingPermissionsAsync();
+
+      Settings.initializeSDK();
+
+      if (status === "granted") {
+        await Settings.setAdvertiserTrackingEnabled(true);
+      }
+    };
+
+    requestTracking();
+  }, []);
 
   const handleRegister = () => {
     // Traditional email/password registration could go here if desired.
@@ -86,6 +128,57 @@ const LoginController = () => {
       console.error("Facebook sign up failed", err);
     }
   }, [startFacebookOAuth]);
+
+  const loginWithFacebook = async () => {
+    try {
+      console.log("loginWithFacebook");
+      const result = await LoginManager.logInWithPermissions([
+        "public_profile",
+        "email",
+      ]);
+
+      if (result.isCancelled) {
+        console.log("==> Login cancelled");
+        return;
+      }
+
+      console.log("Facebook login result:", result);
+
+      // Get the Facebook access token
+      const data = await AccessToken.getCurrentAccessToken();
+      if (!data) {
+        Alert.alert("Error", "Failed to get Facebook access token");
+        return;
+      }
+
+      console.log("Facebook access token:", data.accessToken);
+
+      // Create a Firebase credential using the Facebook access token
+      const facebookCredential = FacebookAuthProvider.credential(
+        data.accessToken
+      );
+
+      // Sign in to Firebase with the Facebook credential
+      const userCredential = await signInWithCredential(
+        auth,
+        facebookCredential
+      );
+      console.log("Firebase user signed in:", userCredential.user);
+
+      // Get user profile data from Facebook
+      const currentProfile = await Profile.getCurrentProfile();
+      console.log("Facebook profile:", currentProfile);
+
+      // Navigate to home screen after successful login
+      router.replace("/(tabs)/profile");
+    } catch (error: any) {
+      console.error("Facebook login failed:", error);
+      Alert.alert(
+        "Login Error",
+        error.message || "Failed to sign in with Facebook. Please try again."
+      );
+    }
+  };
 
   // While auth state is loading or we're redirecting, render nothing to avoid flicker.
   // if (!isLoaded || isSignedIn) {
@@ -145,7 +238,8 @@ const LoginController = () => {
                 {/* Facebook Button */}
                 <TouchableOpacity
                   style={[styles.socialButton]}
-                  onPress={handleFacebookSignUp}
+                  // onPress={handleFacebookSignUp}
+                  onPress={loginWithFacebook}
                   activeOpacity={0.7}
                 >
                   <Image

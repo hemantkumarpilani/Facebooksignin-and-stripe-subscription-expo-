@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import {
   View,
   Text,
@@ -10,16 +10,30 @@ import {
 import { LinearGradient } from "expo-linear-gradient";
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import { useRouter } from "expo-router";
+import {
+  onAuthStateChanged,
+  signOut as firebaseSignOut,
+  User as FirebaseUser,
+} from "firebase/auth";
+import { auth as firebaseAuth } from "../../config/firebase";
 
 export default function ProfileScreen() {
   const { user } = useUser();
   const { signOut } = useAuth();
   const router = useRouter();
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(firebaseAuth, (currentUser) => {
+      setFirebaseUser(currentUser);
+    });
+    return unsubscribe;
+  }, []);
 
   const handleLogoutAndDelete = async () => {
     Alert.alert(
       "Logout account",
-      "This will sign you out and  log out your account. This cannot be undone.",
+      "This will sign you out. This cannot be undone.",
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -27,15 +41,18 @@ export default function ProfileScreen() {
           style: "destructive",
           onPress: async () => {
             try {
-              // Delete the Clerk user and then sign out / redirect
-              await user?.delete();
-              await signOut();
+              if (user) {
+                // Clerk flow
+                await signOut();
+              } else if (firebaseUser) {
+                await firebaseSignOut(firebaseAuth);
+              }
               router.replace("/(auth)/login");
             } catch (err) {
-              console.error("Delete account error", err);
+              console.error("Logout error", err);
               Alert.alert(
                 "Error",
-                "We couldn't delete your account right now. Please try again."
+                "We couldn't log you out. Please try again."
               );
             }
           },
@@ -47,9 +64,19 @@ export default function ProfileScreen() {
   const fullName =
     user?.fullName ||
     [user?.firstName, user?.lastName].filter(Boolean).join(" ") ||
+    firebaseUser?.displayName ||
     "User";
-  const email = user?.primaryEmailAddress?.emailAddress ?? "Logged in user";
-  const avatarUrl = user?.imageUrl;
+  const email =
+    user?.primaryEmailAddress?.emailAddress ||
+    firebaseUser?.email ||
+    "Logged in user";
+  const avatarUrl = user?.imageUrl || firebaseUser?.photoURL || undefined;
+  const userId = user?.id || firebaseUser?.uid || "";
+  const statusText = user
+    ? "Signed in (Clerk)"
+    : firebaseUser
+    ? "Signed in (Firebase)"
+    : "Signed out";
 
   return (
     <LinearGradient
@@ -82,14 +109,14 @@ export default function ProfileScreen() {
             <Text style={styles.rowLabel}>Status</Text>
             <View style={styles.statusPill}>
               <View style={styles.statusDot} />
-              <Text style={styles.statusText}>Signed in</Text>
+              <Text style={styles.statusText}>{statusText}</Text>
             </View>
           </View>
 
           <View style={styles.row}>
             <Text style={styles.rowLabel}>User ID</Text>
             <Text style={styles.rowValue} numberOfLines={1}>
-              {user?.id}
+              {userId}
             </Text>
           </View>
         </View>

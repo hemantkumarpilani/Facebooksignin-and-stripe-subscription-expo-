@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   Dimensions,
   KeyboardAvoidingView,
@@ -22,6 +22,13 @@ import googlelogo from "@assets/googlelogo.png";
 import facebooklogo from "@assets/facebooklogo.png";
 import { requestTrackingPermissionsAsync } from "expo-tracking-transparency";
 import {
+  GoogleSignin,
+  isErrorWithCode,
+  isSuccessResponse,
+  statusCodes,
+} from "@react-native-google-signin/google-signin";
+
+import {
   LoginManager,
   AccessToken,
   LoginButton,
@@ -31,8 +38,13 @@ import {
 import {
   signInWithCredential,
   FacebookAuthProvider,
+  GoogleAuthProvider,
   onAuthStateChanged,
   User,
+  linkWithCredential,
+  UserCredential,
+  fetchSignInMethodsForEmail,
+  AuthError,
 } from "firebase/auth";
 import { auth } from "../../../../config/firebase";
 
@@ -45,6 +57,13 @@ const LoginController = () => {
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [pendingCred, setPendingCred] = useState<
+    | ReturnType<typeof FacebookAuthProvider.credential>
+    | ReturnType<typeof GoogleAuthProvider.credential>
+    | null
+  >(null);
+  const [pendingEmail, setPendingEmail] = useState<string | null>(null);
+
   const [showPassword, setShowPassword] = useState(false);
   const router = useRouter();
   const { isLoaded, isSignedIn } = useAuth();
@@ -96,6 +115,27 @@ const LoginController = () => {
     requestTracking();
   }, []);
 
+  // Configure Google Sign-in for Firebase
+  useEffect(() => {
+    const configureGoogleSignIn = async () => {
+      try {
+        // You need to get the Web Client ID from Firebase Console:
+        // Firebase Console > Authentication > Sign-in method > Google > Web SDK configuration
+        // Or from Google Cloud Console > APIs & Services > Credentials > OAuth 2.0 Client IDs (Web application)
+        await GoogleSignin.configure({
+          webClientId:
+            "86476201066-vc72p01s197b77huemmqesmm896bqn3c.apps.googleusercontent.com", // Replace with your actual Web Client ID
+          offlineAccess: true,
+          forceCodeForRefreshToken: true,
+        });
+      } catch (error) {
+        console.error("Google Sign-in configuration error:", error);
+      }
+    };
+
+    configureGoogleSignIn();
+  }, []);
+
   const handleRegister = () => {
     // Traditional email/password registration could go here if desired.
     console.log("Register pressed", { username, email, password });
@@ -112,6 +152,230 @@ const LoginController = () => {
       console.error("Google sign up failed", err);
     }
   }, [startGoogleOAuth]);
+
+  // const loginWithGoogle = useCallback(async () => {
+  //   try {
+  //     // Check if Google Play Services are available (Android only)
+  //     if (Platform.OS === "android") {
+  //       await GoogleSignin.hasPlayServices();
+  //     }
+
+  //     // Sign in with Google
+  //     const response = await GoogleSignin.signIn();
+
+  //     if (isSuccessResponse(response)) {
+  //       console.log("Google sign-in successful:", response.data);
+
+  //       // Get the ID token from Google Sign-in
+  //       const idToken = response.data?.idToken;
+
+  //       if (!idToken) {
+  //         Alert.alert("Error", "Failed to get ID token from Google Sign-in");
+  //         return;
+  //       }
+
+  //       // Create a Firebase credential using the Google ID token
+  //       const googleCredential = GoogleAuthProvider.credential(idToken);
+
+  //       // Sign in to Firebase with the Google credential
+  //       const userCredential = await signInWithCredential(
+  //         auth,
+  //         googleCredential
+  //       );
+
+  //       console.log("Firebase user signed in:", userCredential.user);
+  //       console.log("User email:", userCredential.user.email);
+  //       console.log("User display name:", userCredential.user.displayName);
+
+  //       // Navigate to profile screen after successful authentication
+  //       router.replace("/(tabs)/profile");
+  //     } else {
+  //       // Sign in was cancelled by user
+  //       console.log("Google sign-in cancelled by user");
+  //     }
+  //   } catch (error: any) {
+  //     console.log(JSON.stringify(error, null, 2));
+  //     console.error("Google sign-in error:", error);
+
+  //     if (isErrorWithCode(error)) {
+  //       switch (error.code) {
+  //         case statusCodes.IN_PROGRESS:
+  //           // Operation (e.g. sign in) already in progress
+  //           Alert.alert("Info", "Google sign-in is already in progress");
+  //           break;
+  //         case statusCodes.PLAY_SERVICES_NOT_AVAILABLE:
+  //           // Android only, play services not available or outdated
+  //           Alert.alert(
+  //             "Error",
+  //             "Google Play Services not available. Please update Google Play Services."
+  //           );
+  //           break;
+  //         case statusCodes.SIGN_IN_CANCELLED:
+  //           console.log("Google sign-in cancelled by user");
+  //           break;
+  //         default:
+  //           Alert.alert(
+  //             "Error",
+  //             error.message ||
+  //               "Failed to sign in with Google. Please try again."
+  //           );
+  //       }
+  //     } else {
+  //       // An error that's not related to Google sign in occurred
+  //       Alert.alert(
+  //         "Error",
+  //         error.message || "An unexpected error occurred. Please try again."
+  //       );
+  //     }
+  //   }
+  // }, [router]);
+
+  const handleAccountExistsError = async (
+    error: any,
+    newCredential:
+      | ReturnType<typeof GoogleAuthProvider.credential>
+      | ReturnType<typeof FacebookAuthProvider.credential>
+  ) => {
+    const _error = error as AuthError & {
+      customData?: { email?: string };
+      email?: string;
+    };
+
+    if (_error.code !== "auth/account-exists-with-different-credential") {
+      throw error;
+    }
+
+    const emailFromError = _error.customData?.email || (_error as any).email;
+    if (!emailFromError) {
+      Alert.alert(
+        "Login error",
+        "Account exists with a different provider, but email is missing. Please use the original provider."
+      );
+      return;
+    }
+
+    const methods = await fetchSignInMethodsForEmail(auth, emailFromError);
+    console.log("Existing sign-in methods for email:", emailFromError, methods);
+
+    setPendingCred(newCredential);
+    setPendingEmail(emailFromError);
+
+    if (methods.includes("google.com")) {
+      Alert.alert(
+        "Account already exists",
+        "This email is already linked to Google. Please sign in with Google, then we will link the new provider."
+      );
+    } else if (methods.includes("facebook.com")) {
+      Alert.alert(
+        "Account already exists",
+        "This email is already linked to Facebook. Please sign in with Facebook, then we will link the new provider."
+      );
+    } else {
+      Alert.alert(
+        "Account already exists",
+        "This email is already linked to another sign-in method. Please use that method first."
+      );
+    }
+  };
+
+  const tryLinkPendingCredential = async () => {
+    if (!pendingCred || !auth.currentUser) return;
+
+    try {
+      const result: UserCredential = await linkWithCredential(
+        auth.currentUser,
+        pendingCred
+      );
+      console.log("Linked additional provider to existing account:", {
+        user: result.user.uid,
+        providers: result.user.providerData.map((p) => p.providerId),
+      });
+      setPendingCred(null);
+      setPendingEmail(null);
+    } catch (err) {
+      console.error("Failed to link pending credential:", err);
+      Alert.alert(
+        "Linking error",
+        "We could not link the additional provider. You can still continue with the provider you used to sign in."
+      );
+    }
+  };
+
+  const loginWithGoogle = useCallback(async () => {
+    try {
+      if (Platform.OS === "android") {
+        await GoogleSignin.hasPlayServices();
+      }
+
+      const response = await GoogleSignin.signIn();
+
+      if (!isSuccessResponse(response)) {
+        console.log("Google sign-in cancelled by user");
+        return;
+      }
+
+      console.log("Google sign-in successful:", response.data);
+
+      const idToken = response.data?.idToken;
+
+      if (!idToken) {
+        Alert.alert("Error", "Failed to get ID token from Google Sign-in");
+        return;
+      }
+
+      const googleCredential = GoogleAuthProvider.credential(idToken);
+
+      try {
+        const userCredential = await signInWithCredential(
+          auth,
+          googleCredential
+        );
+        console.log("Firebase user signed in (Google):", userCredential.user);
+
+        // If we had a pending credential (e.g. Facebook), link it now
+        await tryLinkPendingCredential();
+
+        router.replace("/(tabs)/profile");
+      } catch (err: any) {
+        if (err?.code === "auth/account-exists-with-different-credential") {
+          await handleAccountExistsError(err, googleCredential);
+        } else {
+          throw err;
+        }
+      }
+    } catch (error: any) {
+      console.log(JSON.stringify(error, null, 2));
+      console.error("Google sign-in error:", error);
+
+      if (isErrorWithCode(error)) {
+        switch (error.code) {
+          case statusCodes.IN_PROGRESS:
+            Alert.alert("Info", "Google sign-in is already in progress");
+            break;
+          case statusCodes.PLAY_SERVICES_NOT_AVAILABLE:
+            Alert.alert(
+              "Error",
+              "Google Play Services not available. Please update Google Play Services."
+            );
+            break;
+          case statusCodes.SIGN_IN_CANCELLED:
+            console.log("Google sign-in cancelled by user");
+            break;
+          default:
+            Alert.alert(
+              "Error",
+              error.message ||
+                "Failed to sign in with Google. Please try again."
+            );
+        }
+      } else {
+        Alert.alert(
+          "Error",
+          error?.message || "An unexpected error occurred. Please try again."
+        );
+      }
+    }
+  }, [router, pendingCred, pendingEmail]);
 
   const handleFacebookSignUp = React.useCallback(async () => {
     try {
@@ -224,7 +488,8 @@ const LoginController = () => {
                 {/* Google Button */}
                 <TouchableOpacity
                   style={styles.socialButton}
-                  onPress={handleGoogleSignUp}
+                  // onPress={handleGoogleSignUp}
+                  onPress={loginWithGoogle}
                   activeOpacity={0.7}
                 >
                   <Image
